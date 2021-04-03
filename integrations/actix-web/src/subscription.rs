@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use actix::{
-    Actor, ActorContext, ActorFuture, ActorStream, AsyncContext, ContextFutureSpawner,
+    Actor, ActorContext, ActorFutureExt, ActorStreamExt, AsyncContext, ContextFutureSpawner,
     StreamHandler, WrapFuture, WrapStream,
 };
 use actix_http::error::PayloadError;

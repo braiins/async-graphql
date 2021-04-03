@@ -10,8 +10,8 @@ use std::future::Future;
 use std::io::{self, ErrorKind};
 use std::pin::Pin;
 
-use actix_web::client::PayloadError;
 use actix_web::dev::{Payload, PayloadStream};
+use actix_web::error::PayloadError;
 use actix_web::http::{Method, StatusCode};
 use actix_web::{http, Error, FromRequest, HttpRequest, HttpResponse, Responder, Result};
 use futures_util::future::{self, FutureExt};
