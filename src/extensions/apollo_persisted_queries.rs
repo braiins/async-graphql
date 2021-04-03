@@ -53,7 +53,7 @@ impl CacheStorage for LruCacheStorage {
 /// Apollo persisted queries extension.
 ///
 /// [Reference](https://www.apollographql.com/docs/react/api/link/persisted-queries/)
-#[cfg_attr(feature = "nightly", doc(cfg(feature = "apollo_persisted_queries")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "apollo_persisted_queries")))]
 pub struct ApolloPersistedQueries<T>(T);
 
 impl<T: CacheStorage> ApolloPersistedQueries<T> {
@@ -101,7 +101,7 @@ impl<T: CacheStorage> Extension for ApolloPersistedQueriesExtension<T> {
             } else {
                 let sha256_hash = format!("{:x}", Sha256::digest(request.query.as_bytes()));
 
-                if (persisted_query.sha256_hash != sha256_hash) {
+                if persisted_query.sha256_hash != sha256_hash {
                     Err(ServerError::new("provided sha does not match query"))
                 } else {
                     self.storage.set(sha256_hash, request.query.clone()).await;
@@ -116,7 +116,7 @@ impl<T: CacheStorage> Extension for ApolloPersistedQueriesExtension<T> {
 
 #[cfg(test)]
 mod tests {
-    #[async_std::test]
+    #[tokio::test]
     async fn test() {
         use super::*;
         use crate::*;

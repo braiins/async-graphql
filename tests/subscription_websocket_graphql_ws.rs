@@ -4,7 +4,7 @@ use futures_channel::mpsc;
 use futures_util::stream::{Stream, StreamExt};
 use futures_util::SinkExt;
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_subscription_ws_transport() {
     struct QueryRoot;
 
@@ -80,7 +80,7 @@ pub async fn test_subscription_ws_transport() {
     );
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_subscription_ws_transport_with_token() {
     struct Token(String);
 
@@ -174,7 +174,7 @@ pub async fn test_subscription_ws_transport_with_token() {
     );
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_subscription_ws_transport_error() {
     struct Event {
         value: i32,
@@ -270,7 +270,7 @@ pub async fn test_subscription_ws_transport_error() {
     );
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_subscription_init_error() {
     struct QueryRoot;
 
@@ -314,7 +314,7 @@ pub async fn test_subscription_init_error() {
     );
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_subscription_too_many_initialisation_requests_error() {
     struct QueryRoot;
 
@@ -369,7 +369,7 @@ pub async fn test_subscription_too_many_initialisation_requests_error() {
     );
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_query_over_websocket() {
     struct QueryRoot;
 
@@ -428,5 +428,39 @@ pub async fn test_query_over_websocket() {
             "id": "1",
         })),
         serde_json::from_str(&stream.next().await.unwrap().unwrap_text()).unwrap()
+    );
+}
+
+#[tokio::test]
+pub async fn test_start_before_connection_init() {
+    struct QueryRoot;
+
+    #[Object]
+    impl QueryRoot {
+        async fn value(&self) -> i32 {
+            999
+        }
+    }
+
+    let schema = Schema::new(QueryRoot, EmptyMutation, EmptySubscription);
+    let (mut tx, rx) = mpsc::unbounded();
+    let mut stream = http::WebSocket::new(schema, rx, WebSocketProtocols::GraphQLWS);
+
+    tx.send(
+        serde_json::to_string(&value!({
+            "type": "start",
+            "id": "1",
+            "payload": {
+                "query": "query { value }"
+            },
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        stream.next().await.unwrap().unwrap_close(),
+        (1011, "The handshake is not completed.".to_string())
     );
 }

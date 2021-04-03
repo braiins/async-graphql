@@ -9,9 +9,9 @@ use syn::{
 use crate::args::{self, ComplexityType, RenameRuleExt, RenameTarget, SubscriptionField};
 use crate::output_type::OutputType;
 use crate::utils::{
-    generate_default, generate_guards, generate_validator, get_cfg_attrs, get_crate_name,
-    get_param_getter_ident, get_rustdoc, get_type_path_and_name, parse_complexity_expr,
-    parse_graphql_attrs, remove_graphql_attrs, visible_fn, GeneratorResult,
+    gen_deprecation, generate_default, generate_guards, generate_validator, get_cfg_attrs,
+    get_crate_name, get_param_getter_ident, get_rustdoc, get_type_path_and_name,
+    parse_complexity_expr, parse_graphql_attrs, remove_graphql_attrs, visible_fn, GeneratorResult,
 };
 
 pub fn generate(
@@ -20,6 +20,9 @@ pub fn generate(
 ) -> GeneratorResult<TokenStream> {
     let crate_name = get_crate_name(subscription_args.internal);
     let (self_ty, self_name) = get_type_path_and_name(item_impl.self_ty.as_ref())?;
+    let generics = &item_impl.generics;
+    let where_clause = &item_impl.generics.where_clause;
+    let extends = subscription_args.extends;
 
     let gql_typename = subscription_args
         .name
@@ -54,11 +57,7 @@ pub fn generate(
             let field_desc = get_rustdoc(&method.attrs)?
                 .map(|s| quote! {::std::option::Option::Some(#s)})
                 .unwrap_or_else(|| quote! {::std::option::Option::None});
-            let field_deprecation = field
-                .deprecation
-                .as_ref()
-                .map(|s| quote! {::std::option::Option::Some(#s)})
-                .unwrap_or_else(|| quote! {::std::option::Option::None});
+            let field_deprecation = gen_deprecation(&field.deprecation, &crate_name);
             let cfg_attrs = get_cfg_attrs(&method.attrs);
 
             if method.sig.asyncness.is_none() {
@@ -72,7 +71,11 @@ pub fn generate(
             let ty = match &method.sig.output {
                 ReturnType::Type(_, ty) => OutputType::parse(ty)?,
                 ReturnType::Default => {
-                    return Err(Error::new_spanned(&method.sig.output, "Missing type").into())
+                    return Err(Error::new_spanned(
+                        &method.sig.output,
+                        "Resolver must have a return type",
+                    )
+                    .into())
                 }
             };
 
@@ -357,12 +360,8 @@ pub fn generate(
                                 resolve_id,
                                 &inc_resolve_id,
                             );
-                            let ctx_extension = #crate_name::extensions::ExtensionContext {
-                                schema_data: &schema_env.data,
-                                query_data: &query_env.ctx_data,
-                            };
 
-                            query_env.extensions.execution_start(&ctx_extension);
+                            query_env.extensions.execution_start();
 
                             #[allow(bare_trait_objects)]
                             let ri = #crate_name::extensions::ResolveInfo {
@@ -372,12 +371,10 @@ pub fn generate(
                                 return_type: &<<#stream_ty as #crate_name::futures_util::stream::Stream>::Item as #crate_name::Type>::qualified_type_name(),
                             };
 
-                            query_env.extensions.resolve_start(&ctx_extension, &ri);
-
+                            query_env.extensions.resolve_start(&ri);
                             let res = #crate_name::OutputType::resolve(&msg, &ctx_selection_set, &*field).await;
-
-                            query_env.extensions.resolve_end(&ctx_extension, &ri);
-                            query_env.extensions.execution_end(&ctx_extension);
+                            query_env.extensions.resolve_end(&ri);
+                            query_env.extensions.execution_end();
 
                             res
                         }
@@ -425,7 +422,7 @@ pub fn generate(
         #item_impl
 
         #[allow(clippy::all, clippy::pedantic)]
-        impl #crate_name::Type for #self_ty {
+        impl #generics #crate_name::Type for #self_ty #where_clause {
             fn type_name() -> ::std::borrow::Cow<'static, ::std::primitive::str> {
                 ::std::borrow::Cow::Borrowed(#gql_typename)
             }
@@ -441,7 +438,7 @@ pub fn generate(
                         fields
                     },
                     cache_control: ::std::default::Default::default(),
-                    extends: false,
+                    extends: #extends,
                     keys: ::std::option::Option::None,
                     visible: ::std::option::Option::None,
                 })
@@ -450,10 +447,10 @@ pub fn generate(
 
         #[allow(clippy::all, clippy::pedantic)]
         #[allow(unused_braces, unused_variables)]
-        impl #crate_name::SubscriptionType for #self_ty {
+        impl #generics #crate_name::SubscriptionType for #self_ty #where_clause {
             fn create_field_stream<'__life>(
                 &'__life self,
-                ctx: &'__life #crate_name::Context<'__life>,
+                ctx: &'__life #crate_name::Context<'_>,
             ) -> ::std::option::Option<::std::pin::Pin<::std::boxed::Box<dyn #crate_name::futures_util::stream::Stream<Item = #crate_name::ServerResult<#crate_name::Value>> + ::std::marker::Send + '__life>>> {
                 #(#create_stream)*
                 ::std::option::Option::None

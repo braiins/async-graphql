@@ -4,9 +4,9 @@ use std::sync::Arc;
 use async_graphql_value::ConstValue;
 
 use crate::parser::types::Field;
-use crate::registry::Registry;
+use crate::registry::{self, Registry};
 use crate::{
-    registry, ContainerType, ContextSelectionSet, InputValueError, InputValueResult, Positioned,
+    ContainerType, Context, ContextSelectionSet, InputValueError, InputValueResult, Positioned,
     Result, ServerResult, Value,
 };
 
@@ -45,6 +45,12 @@ pub trait InputType: Type + Send + Sync + Sized {
 
     /// Convert to a `Value` for introspection.
     fn to_value(&self) -> Value;
+
+    /// Get the federation fields, only for InputObject.
+    #[doc(hidden)]
+    fn federation_fields() -> Option<String> {
+        None
+    }
 }
 
 /// Represents a GraphQL output value.
@@ -180,7 +186,6 @@ impl<T: OutputType + ?Sized> OutputType for Arc<T> {
     }
 }
 
-#[async_trait::async_trait]
 impl<T: InputType> InputType for Arc<T> {
     fn parse(value: Option<ConstValue>) -> InputValueResult<Self> {
         T::parse(value)
@@ -191,4 +196,12 @@ impl<T: InputType> InputType for Arc<T> {
     fn to_value(&self) -> ConstValue {
         T::to_value(&self)
     }
+}
+
+#[doc(hidden)]
+#[async_trait::async_trait]
+pub trait ComplexObject {
+    fn fields(registry: &mut registry::Registry) -> Vec<(String, registry::MetaField)>;
+
+    async fn resolve_field(&self, ctx: &Context<'_>) -> ServerResult<Option<Value>>;
 }

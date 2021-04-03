@@ -18,7 +18,7 @@ pub trait SubscriptionType: Type + Send + Sync {
     #[doc(hidden)]
     fn create_field_stream<'a>(
         &'a self,
-        ctx: &'a Context<'a>,
+        ctx: &'a Context<'_>,
     ) -> Option<Pin<Box<dyn Stream<Item = ServerResult<Value>> + Send + 'a>>>;
 }
 
@@ -38,13 +38,7 @@ pub(crate) fn collect_subscription_streams<'a, T: SubscriptionType + 'static>(
                 let ctx = ctx.clone();
                 async_stream::stream! {
                     let ctx = ctx.with_field(field);
-                    let field_name = ctx
-                        .item
-                        .node
-                        .response_key()
-                        .node
-                        .clone();
-
+                    let field_name = ctx.item.node.response_key().node.clone();
                     let stream = root.create_field_stream(&ctx);
                     if let Some(mut stream) = stream {
                         while let Some(item) = stream.next().await {
@@ -103,7 +97,7 @@ pub(crate) fn collect_subscription_streams<'a, T: SubscriptionType + 'static>(
 impl<T: SubscriptionType> SubscriptionType for &T {
     fn create_field_stream<'a>(
         &'a self,
-        ctx: &'a Context<'a>,
+        ctx: &'a Context<'_>,
     ) -> Option<Pin<Box<dyn Stream<Item = ServerResult<Value>> + Send + 'a>>> {
         T::create_field_stream(*self, ctx)
     }

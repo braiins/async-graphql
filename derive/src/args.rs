@@ -86,6 +86,35 @@ pub struct ConcreteType {
     pub params: PathList,
 }
 
+#[derive(Debug)]
+pub enum Deprecation {
+    NoDeprecated,
+    Deprecated { reason: Option<String> },
+}
+
+impl Default for Deprecation {
+    fn default() -> Self {
+        Deprecation::NoDeprecated
+    }
+}
+
+impl FromMeta for Deprecation {
+    fn from_word() -> darling::Result<Self> {
+        Ok(Deprecation::Deprecated { reason: None })
+    }
+
+    fn from_value(value: &Lit) -> darling::Result<Self> {
+        match value {
+            Lit::Bool(LitBool { value: true, .. }) => Ok(Deprecation::Deprecated { reason: None }),
+            Lit::Bool(LitBool { value: false, .. }) => Ok(Deprecation::NoDeprecated),
+            Lit::Str(str) => Ok(Deprecation::Deprecated {
+                reason: Some(str.value()),
+            }),
+            _ => Err(darling::Error::unexpected_lit_type(value)),
+        }
+    }
+}
+
 #[derive(FromField)]
 #[darling(attributes(graphql), forward_attrs(doc))]
 pub struct SimpleObjectField {
@@ -99,7 +128,7 @@ pub struct SimpleObjectField {
     #[darling(default)]
     pub name: Option<String>,
     #[darling(default)]
-    pub deprecation: Option<String>,
+    pub deprecation: Deprecation,
     #[darling(default)]
     pub owned: bool,
     #[darling(default)]
@@ -128,6 +157,8 @@ pub struct SimpleObject {
     pub internal: bool,
     #[darling(default)]
     pub dummy: bool,
+    #[darling(default)]
+    pub complex: bool,
     #[darling(default)]
     pub name: Option<String>,
     #[darling(default)]
@@ -198,7 +229,7 @@ pub struct ObjectField {
     pub skip: bool,
     pub entity: bool,
     pub name: Option<String>,
-    pub deprecation: Option<String>,
+    pub deprecation: Deprecation,
     pub cache_control: CacheControl,
     pub external: bool,
     pub provides: Option<String>,
@@ -238,7 +269,7 @@ pub struct EnumItem {
     #[darling(default)]
     pub name: Option<String>,
     #[darling(default)]
-    pub deprecation: Option<String>,
+    pub deprecation: Deprecation,
     #[darling(default)]
     pub visible: Option<Visible>,
 }
@@ -340,7 +371,7 @@ pub struct InterfaceField {
     #[darling(default, multiple, rename = "arg")]
     pub args: Vec<InterfaceFieldArgument>,
     #[darling(default)]
-    pub deprecation: Option<String>,
+    pub deprecation: Deprecation,
     #[darling(default)]
     pub external: bool,
     #[darling(default)]
@@ -398,6 +429,7 @@ pub struct Subscription {
     pub rename_fields: Option<RenameRule>,
     pub rename_args: Option<RenameRule>,
     pub use_type_description: bool,
+    pub extends: bool,
 }
 
 #[derive(FromMeta, Default)]
@@ -416,7 +448,7 @@ pub struct SubscriptionFieldArgument {
 pub struct SubscriptionField {
     pub skip: bool,
     pub name: Option<String>,
-    pub deprecation: Option<String>,
+    pub deprecation: Deprecation,
     pub guard: Option<Meta>,
     pub visible: Option<Visible>,
     pub complexity: Option<ComplexityType>,
@@ -468,6 +500,8 @@ pub struct MergedSubscription {
     pub name: Option<String>,
     #[darling(default)]
     pub visible: Option<Visible>,
+    #[darling(default)]
+    pub extends: bool,
 }
 
 #[derive(Debug, Copy, Clone, FromMeta)]
@@ -543,12 +577,73 @@ pub struct Description {
     pub internal: bool,
 }
 
+#[derive(Debug)]
+pub enum NewTypeName {
+    UseNewName(String),
+    UseRustName,
+    UseOriginalName,
+}
+
+impl Default for NewTypeName {
+    fn default() -> Self {
+        Self::UseOriginalName
+    }
+}
+
+impl FromMeta for NewTypeName {
+    fn from_word() -> darling::Result<Self> {
+        Ok(Self::UseRustName)
+    }
+
+    fn from_string(value: &str) -> darling::Result<Self> {
+        Ok(Self::UseNewName(value.to_string()))
+    }
+
+    fn from_bool(value: bool) -> darling::Result<Self> {
+        if value {
+            Ok(Self::UseRustName)
+        } else {
+            Ok(Self::UseOriginalName)
+        }
+    }
+}
+
 #[derive(FromDeriveInput)]
+#[darling(attributes(graphql), forward_attrs(doc))]
 pub struct NewType {
     pub ident: Ident,
     pub generics: Generics,
+    pub attrs: Vec<Attribute>,
     pub data: Data<Ignored, syn::Type>,
 
     #[darling(default)]
     pub internal: bool,
+    #[darling(default)]
+    pub name: NewTypeName,
+    #[darling(default)]
+    pub visible: Option<Visible>,
+}
+
+#[derive(FromMeta, Default)]
+#[darling(default)]
+pub struct ComplexObject {
+    pub internal: bool,
+    pub name: Option<String>,
+    pub rename_fields: Option<RenameRule>,
+    pub rename_args: Option<RenameRule>,
+}
+
+#[derive(FromMeta, Default)]
+#[darling(default)]
+pub struct ComplexObjectField {
+    pub skip: bool,
+    pub name: Option<String>,
+    pub deprecation: Deprecation,
+    pub cache_control: CacheControl,
+    pub external: bool,
+    pub provides: Option<String>,
+    pub requires: Option<String>,
+    pub guard: Option<Meta>,
+    pub visible: Option<Visible>,
+    pub complexity: Option<ComplexityType>,
 }

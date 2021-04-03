@@ -1,5 +1,5 @@
 use async_graphql::*;
-use async_std::stream::{self, Stream};
+use futures_util::stream::{self, Stream};
 
 #[derive(Clone, Debug)]
 struct Circle {
@@ -109,6 +109,15 @@ struct SimpleObject {
     #[graphql(deprecation = "Field e is deprecated")]
     e: bool,
 
+    #[graphql(deprecation)]
+    e2: bool,
+
+    #[graphql(deprecation = true)]
+    e3: bool,
+
+    #[graphql(deprecation = false)]
+    e4: bool,
+
     f: TestEnum,
 
     g: TestInterface,
@@ -162,11 +171,11 @@ impl Subscription {
         &self,
         #[graphql(default = 1)] step: i32,
     ) -> impl Stream<Item = i32> {
-        stream::once(step)
+        stream::once(async move { step })
     }
 }
 
-// #[async_std::test]
+// #[tokio::test]
 // pub async fn test_introspection_schema() {
 //     let schema = Schema::new(Query, Mutation, Subscription);
 
@@ -210,7 +219,7 @@ impl Subscription {
 //     assert_eq!(res, res_json)
 // }
 
-// #[async_std::test]
+// #[tokio::test]
 // pub async fn test_introspection_documentation() {
 //     let schema = Schema::new(Query, EmptyMutation, EmptySubscription);
 //
@@ -277,7 +286,7 @@ impl Subscription {
 //     assert_eq!(res, res_json)
 // }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_introspection_deprecation() {
     let schema = Schema::new(Query, EmptyMutation, EmptySubscription);
 
@@ -328,6 +337,21 @@ pub async fn test_introspection_deprecation() {
                 "name": "e",
                 "isDeprecated": true,
                 "deprecationReason": "Field e is deprecated"
+              },
+              {
+                "name": "e2",
+                "isDeprecated": true,
+                "deprecationReason": null
+              },
+              {
+                "name": "e3",
+                "isDeprecated": true,
+                "deprecationReason": null
+              },
+              {
+                "name": "e4",
+                "isDeprecated": false,
+                "deprecationReason": null
               },
               {
                 "name": "f",
@@ -385,6 +409,11 @@ pub async fn test_introspection_deprecation() {
               },
               {
                 "name": "d",
+                "isDeprecated": false,
+                "deprecationReason": null
+              },
+              {
+                "name": "e4",
                 "isDeprecated": false,
                 "deprecationReason": null
               },
@@ -514,7 +543,7 @@ pub async fn test_introspection_deprecation() {
     assert_eq!(res, res_json);
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_introspection_type_kind() {
     let schema = Schema::new(Query, Mutation, EmptySubscription);
 
@@ -673,7 +702,7 @@ pub async fn test_introspection_type_kind() {
     assert_eq!(res, res_json);
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_introspection_scalar() {
     let schema = Schema::new(Query, Mutation, EmptySubscription);
 
@@ -700,7 +729,7 @@ pub async fn test_introspection_scalar() {
     assert_eq!(res, res_json)
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_introspection_union() {
     let schema = Schema::new(Query, Mutation, EmptySubscription);
 
@@ -736,7 +765,7 @@ pub async fn test_introspection_union() {
     assert_eq!(res, res_json)
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_introspection_interface() {
     let schema = Schema::new(Query, EmptyMutation, EmptySubscription);
 
@@ -814,7 +843,7 @@ pub async fn test_introspection_interface() {
     assert_eq!(res, res_json);
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_introspection_enum() {
     let schema = Schema::new(Query, Mutation, EmptySubscription);
 
@@ -863,7 +892,7 @@ pub async fn test_introspection_enum() {
     assert_eq!(res, res_json)
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_introspection_input_object() {
     let schema = Schema::new(Query, Mutation, EmptySubscription);
 
@@ -896,7 +925,7 @@ pub async fn test_introspection_input_object() {
     assert_eq!(res, res_json)
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_introspection_mutation() {
     let schema = Schema::new(Query, Mutation, EmptySubscription);
 
@@ -944,7 +973,7 @@ pub async fn test_introspection_mutation() {
     assert_eq!(res, res_json)
 }
 
-#[async_std::test]
+#[tokio::test]
 pub async fn test_introspection_subscription() {
     let schema = Schema::new(Query, EmptyMutation, Subscription);
 
@@ -992,7 +1021,7 @@ pub async fn test_introspection_subscription() {
     assert_eq!(res, res_json)
 }
 
-// #[async_std::test]
+// #[tokio::test]
 // pub async fn test_introspection_full() {
 //     let schema = Schema::new(Query, EmptyMutation, Subscription);
 //
@@ -1191,3 +1220,55 @@ pub async fn test_introspection_subscription() {
 //
 //     assert_eq!(res, res_json)
 // }
+
+#[tokio::test]
+pub async fn test_disable_introspection() {
+    #[derive(SimpleObject)]
+    struct Query {
+        value: i32,
+    }
+
+    let schema = Schema::build(Query, EmptyMutation, EmptySubscription)
+        .disable_introspection()
+        .finish();
+    assert_eq!(
+        schema
+            .execute("{ __type(name: \"Query\") { name } }")
+            .await
+            .into_result()
+            .unwrap()
+            .data,
+        value!({ "__type": null })
+    );
+
+    assert_eq!(
+        schema
+            .execute(Request::new("{ __type(name: \"Query\") { name } }").disable_introspection())
+            .await
+            .into_result()
+            .unwrap()
+            .data,
+        value!({ "__type": null })
+    );
+
+    let schema = Schema::build(Query, EmptyMutation, EmptySubscription).finish();
+    assert_eq!(
+        schema
+            .execute("{ __type(name: \"Query\") { name } }")
+            .await
+            .into_result()
+            .unwrap()
+            .data,
+        value!({ "__type": { "name": "Query" } })
+    );
+
+    assert_eq!(
+        schema
+            .execute(Request::new("{ __type(name: \"Query\") { name } }").disable_introspection())
+            .await
+            .into_result()
+            .unwrap()
+            .data,
+        value!({ "__type": null })
+    );
+}

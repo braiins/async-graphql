@@ -7,9 +7,9 @@ use syn::{Block, Error, FnArg, Ident, ImplItem, ItemImpl, Pat, ReturnType, Type,
 use crate::args::{self, ComplexityType, RenameRuleExt, RenameTarget};
 use crate::output_type::OutputType;
 use crate::utils::{
-    generate_default, generate_guards, generate_validator, get_cfg_attrs, get_crate_name,
-    get_param_getter_ident, get_rustdoc, get_type_path_and_name, parse_complexity_expr,
-    parse_graphql_attrs, remove_graphql_attrs, visible_fn, GeneratorResult,
+    gen_deprecation, generate_default, generate_guards, generate_validator, get_cfg_attrs,
+    get_crate_name, get_param_getter_ident, get_rustdoc, get_type_path_and_name,
+    parse_complexity_expr, parse_graphql_attrs, remove_graphql_attrs, visible_fn, GeneratorResult,
 };
 
 pub fn generate(
@@ -57,7 +57,11 @@ pub fn generate(
                 let ty = match &method.sig.output {
                     ReturnType::Type(_, ty) => OutputType::parse(ty)?,
                     ReturnType::Default => {
-                        return Err(Error::new_spanned(&method.sig.output, "Missing type").into())
+                        return Err(Error::new_spanned(
+                            &method.sig.output,
+                            "Resolver must have a return type",
+                        )
+                        .into())
                     }
                 };
                 let mut create_ctx = true;
@@ -131,8 +135,7 @@ pub fn generate(
                 let mut key_pat = Vec::new();
                 let mut key_getter = Vec::new();
                 let mut use_keys = Vec::new();
-                let mut keys = Vec::new();
-                let mut keys_str = String::new();
+                let mut get_federation_key = Vec::new();
                 let mut requires_getter = Vec::new();
                 let all_key = args.iter().all(|(_, _, arg)| !arg.key);
 
@@ -153,10 +156,13 @@ pub fn generate(
                     });
 
                     if is_key {
-                        if !keys_str.is_empty() {
-                            keys_str.push(' ');
-                        }
-                        keys_str.push_str(&name);
+                        get_federation_key.push(quote! {
+                            if let Some(fields) = <#ty as #crate_name::InputType>::federation_fields() {
+                                key_str.push(format!("{} {}", #name, fields));                                
+                            } else {
+                                key_str.push(#name.to_string());
+                            }
+                        });
 
                         key_pat.push(quote! {
                             ::std::option::Option::Some(#ident)
@@ -167,7 +173,6 @@ pub fn generate(
                                 value
                             })
                         });
-                        keys.push(name);
                         use_keys.push(ident);
                     } else {
                         // requires
@@ -179,7 +184,13 @@ pub fn generate(
                     }
                 }
 
-                add_keys.push(quote! { registry.add_keys(&<#entity_type as #crate_name::Type>::type_name(), #keys_str); });
+                add_keys.push(quote! {
+                    {
+                        let mut key_str = Vec::new();
+                        #(#get_federation_key)*
+                        registry.add_keys(&<#entity_type as #crate_name::Type>::type_name(), &key_str.join(" "));
+                    }
+                });
                 create_entity_types.push(
                     quote! { <#entity_type as #crate_name::Type>::create_type_info(registry); },
                 );
@@ -226,11 +237,7 @@ pub fn generate(
                 let field_desc = get_rustdoc(&method.attrs)?
                     .map(|s| quote! { ::std::option::Option::Some(#s) })
                     .unwrap_or_else(|| quote! {::std::option::Option::None});
-                let field_deprecation = method_args
-                    .deprecation
-                    .as_ref()
-                    .map(|s| quote! { ::std::option::Option::Some(#s) })
-                    .unwrap_or_else(|| quote! {::std::option::Option::None});
+                let field_deprecation = gen_deprecation(&method_args.deprecation, &crate_name);
                 let external = method_args.external;
                 let requires = match &method_args.requires {
                     Some(requires) => quote! { ::std::option::Option::Some(#requires) },
@@ -243,7 +250,11 @@ pub fn generate(
                 let ty = match &method.sig.output {
                     ReturnType::Type(_, ty) => OutputType::parse(ty)?,
                     ReturnType::Default => {
-                        return Err(Error::new_spanned(&method.sig.output, "Missing type").into())
+                        return Err(Error::new_spanned(
+                            &method.sig.output,
+                            "Resolver must have a return type",
+                        )
+                        .into())
                     }
                 };
                 let cache_control = {

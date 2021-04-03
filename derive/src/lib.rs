@@ -1,9 +1,11 @@
 #![allow(clippy::cognitive_complexity)]
+#![allow(clippy::vec_init_then_push)]
 #![forbid(unsafe_code)]
 
 extern crate proc_macro;
 
 mod args;
+mod complex_object;
 mod description;
 mod r#enum;
 mod input_object;
@@ -46,6 +48,21 @@ pub fn derive_simple_object(input: TokenStream) -> TokenStream {
             Err(err) => return TokenStream::from(err.write_errors()),
         };
     match simple_object::generate(&object_args) {
+        Ok(expanded) => expanded,
+        Err(err) => err.write_errors().into(),
+    }
+}
+
+#[proc_macro_attribute]
+#[allow(non_snake_case)]
+pub fn ComplexObject(args: TokenStream, input: TokenStream) -> TokenStream {
+    let object_args =
+        match args::ComplexObject::from_list(&parse_macro_input!(args as AttributeArgs)) {
+            Ok(object_args) => object_args,
+            Err(err) => return TokenStream::from(err.write_errors()),
+        };
+    let mut item_impl = parse_macro_input!(input as ItemImpl);
+    match complex_object::generate(&object_args, &mut item_impl) {
         Ok(expanded) => expanded,
         Err(err) => err.write_errors().into(),
     }
@@ -158,8 +175,8 @@ pub fn derive_merged_subscription(input: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_derive(Description)]
-pub fn derive_merged_description(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Description, attributes(graphql))]
+pub fn derive_description(input: TokenStream) -> TokenStream {
     let desc_args =
         match args::Description::from_derive_input(&parse_macro_input!(input as DeriveInput)) {
             Ok(desc_args) => desc_args,
@@ -171,7 +188,7 @@ pub fn derive_merged_description(input: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_derive(NewType)]
+#[proc_macro_derive(NewType, attributes(graphql))]
 pub fn derive_newtype(input: TokenStream) -> TokenStream {
     let newtype_args =
         match args::NewType::from_derive_input(&parse_macro_input!(input as DeriveInput)) {

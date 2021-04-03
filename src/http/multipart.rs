@@ -13,7 +13,6 @@ use crate::{BatchRequest, ParseRequestError, UploadValue};
 /// Options for `receive_multipart`.
 #[derive(Default, Clone, Copy)]
 #[non_exhaustive]
-#[cfg_attr(feature = "nightly", doc(cfg(feature = "multipart")))]
 pub struct MultipartOptions {
     /// The maximum file size.
     pub max_file_size: Option<usize>,
@@ -50,7 +49,7 @@ pub(super) async fn receive_batch_multipart(
         Constraints::new().size_limit({
             let mut limit = SizeLimit::new();
             if let (Some(max_file_size), Some(max_num_files)) =
-                (opts.max_file_size, opts.max_file_size)
+                (opts.max_file_size, opts.max_num_files)
             {
                 limit = limit.whole_stream((max_file_size * max_num_files) as u64);
             }

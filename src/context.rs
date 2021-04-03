@@ -1,17 +1,15 @@
 //! Query context.
 
 use std::any::{Any, TypeId};
-use std::collections::{BTreeMap, HashMap};
-use std::convert::TryFrom;
+use std::collections::HashMap;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::Deref;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use async_graphql_value::Value as InputValue;
+use async_graphql_value::{Value as InputValue, Variables};
 use fnv::FnvHashMap;
 use http::header::{AsHeaderName, HeaderMap, IntoHeaderName};
-use serde::de::{Deserialize, Deserializer};
 use serde::ser::{SerializeSeq, Serializer};
 use serde::Serialize;
 
@@ -24,81 +22,6 @@ use crate::{
     Error, InputType, Lookahead, Name, Pos, Positioned, Result, ServerError, ServerResult,
     UploadValue, Value,
 };
-
-/// Variables of a query.
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(transparent)]
-pub struct Variables(pub BTreeMap<Name, Value>);
-
-impl Display for Variables {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("{")?;
-        for (i, (name, value)) in self.0.iter().enumerate() {
-            write!(f, "{}{}: {}", if i == 0 { "" } else { ", " }, name, value)?;
-        }
-        f.write_str("}")
-    }
-}
-
-impl<'de> Deserialize<'de> for Variables {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self(
-            <Option<BTreeMap<Name, Value>>>::deserialize(deserializer)?.unwrap_or_default(),
-        ))
-    }
-}
-
-impl Variables {
-    /// Get the variables from a GraphQL value.
-    ///
-    /// If the value is not a map, then no variables will be returned.
-    #[must_use]
-    pub fn from_value(value: Value) -> Self {
-        match value {
-            Value::Object(obj) => Self(obj),
-            _ => Self::default(),
-        }
-    }
-
-    /// Get the values from a JSON value.
-    ///
-    /// If the value is not a map or the keys of a map are not valid GraphQL names, then no
-    /// variables will be returned.
-    #[must_use]
-    pub fn from_json(value: serde_json::Value) -> Self {
-        Value::from_json(value)
-            .map(Self::from_value)
-            .unwrap_or_default()
-    }
-
-    /// Get the variables as a GraphQL value.
-    #[must_use]
-    pub fn into_value(self) -> Value {
-        Value::Object(self.0)
-    }
-
-    pub(crate) fn variable_path(&mut self, path: &str) -> Option<&mut Value> {
-        let mut parts = path.strip_prefix("variables.")?.split('.');
-
-        let initial = self.0.get_mut(parts.next().unwrap())?;
-
-        parts.try_fold(initial, |current, part| match current {
-            Value::List(list) => part
-                .parse::<u32>()
-                .ok()
-                .and_then(|idx| usize::try_from(idx).ok())
-                .and_then(move |idx| list.get_mut(idx)),
-            Value::Object(obj) => obj.get_mut(part),
-            _ => None,
-        })
-    }
-}
-
-impl From<Variables> for Value {
-    fn from(variables: Variables) -> Self {
-        variables.into_value()
-    }
-}
 
 /// Schema/Context data.
 ///
@@ -320,8 +243,10 @@ pub struct QueryEnvInner {
     pub operation: Positioned<OperationDefinition>,
     pub fragments: HashMap<Name, Positioned<FragmentDefinition>>,
     pub uploads: Vec<UploadValue>,
+    pub session_data: Arc<Data>,
     pub ctx_data: Arc<Data>,
     pub http_headers: spin::Mutex<HeaderMap<String>>,
+    pub disable_introspection: bool,
 }
 
 #[doc(hidden)]
@@ -415,7 +340,7 @@ impl<'a, T> ContextBase<'a, T> {
     /// # Errors
     ///
     /// Returns a `Error` if the specified type data does not exist.
-    pub fn data<D: Any + Send + Sync>(&self) -> Result<&D> {
+    pub fn data<D: Any + Send + Sync>(&self) -> Result<&'a D> {
         self.data_opt::<D>().ok_or_else(|| {
             Error::new(format!(
                 "Data `{}` does not exist.",
@@ -429,17 +354,18 @@ impl<'a, T> ContextBase<'a, T> {
     /// # Panics
     ///
     /// It will panic if the specified data type does not exist.
-    pub fn data_unchecked<D: Any + Send + Sync>(&self) -> &D {
+    pub fn data_unchecked<D: Any + Send + Sync>(&self) -> &'a D {
         self.data_opt::<D>()
             .unwrap_or_else(|| panic!("Data `{}` does not exist.", std::any::type_name::<D>()))
     }
 
     /// Gets the global data defined in the `Context` or `Schema` or `None` if the specified type data does not exist.
-    pub fn data_opt<D: Any + Send + Sync>(&self) -> Option<&D> {
+    pub fn data_opt<D: Any + Send + Sync>(&self) -> Option<&'a D> {
         self.query_env
             .ctx_data
             .0
             .get(&TypeId::of::<D>())
+            .or_else(|| self.query_env.session_data.0.get(&TypeId::of::<D>()))
             .or_else(|| self.schema_env.data.0.get(&TypeId::of::<D>()))
             .and_then(|d| d.downcast_ref::<D>())
     }
@@ -574,7 +500,6 @@ impl<'a, T> ContextBase<'a, T> {
             .and_then(|def| {
                 self.query_env
                     .variables
-                    .0
                     .get(&def.node.name.node)
                     .or_else(|| def.node.default_value())
             })
@@ -728,7 +653,7 @@ impl<'a> ContextBase<'a, &'a Positioned<Field>> {
     ///     }
     /// }
     ///
-    /// async_std::task::block_on(async move {
+    /// tokio::runtime::Runtime::new().unwrap().block_on(async move {
     ///     let schema = Schema::new(Query, EmptyMutation, EmptySubscription);
     ///     assert!(schema.execute("{ obj { a b c }}").await.is_ok());
     ///     assert!(schema.execute("{ obj { a ... { b c } }}").await.is_ok());
@@ -736,10 +661,11 @@ impl<'a> ContextBase<'a, &'a Positioned<Field>> {
     /// });
     ///
     /// ```
-    pub fn field(&self) -> SelectionField<'a> {
+    pub fn field(&self) -> SelectionField {
         SelectionField {
             fragments: &self.query_env.fragments,
             field: &self.item.node,
+            context: self,
         }
     }
 }
@@ -749,12 +675,36 @@ impl<'a> ContextBase<'a, &'a Positioned<Field>> {
 pub struct SelectionField<'a> {
     fragments: &'a HashMap<Name, Positioned<FragmentDefinition>>,
     field: &'a Field,
+    context: &'a Context<'a>,
 }
 
 impl<'a> SelectionField<'a> {
     /// Get the name of this field.
+    #[inline]
     pub fn name(&self) -> &'a str {
         self.field.name.node.as_str()
+    }
+
+    /// Get the alias of this field.
+    #[inline]
+    pub fn alias(&self) -> Option<&'a str> {
+        self.field.alias.as_ref().map(|alias| alias.node.as_str())
+    }
+
+    /// Get the arguments of this field.
+    pub fn arguments(&self) -> ServerResult<Vec<(Name, Value)>> {
+        let mut arguments = Vec::with_capacity(self.field.arguments.len());
+        for (name, value) in &self.field.arguments {
+            let pos = name.pos;
+            arguments.push((
+                name.node.clone(),
+                value
+                    .clone()
+                    .node
+                    .into_const_with(|name| self.context.var_value(&name, pos))?,
+            ));
+        }
+        Ok(arguments)
     }
 
     /// Get all subfields of the current selection set.
@@ -762,20 +712,21 @@ impl<'a> SelectionField<'a> {
         SelectionFieldsIter {
             fragments: self.fragments,
             iter: vec![self.field.selection_set.node.items.iter()],
+            context: self.context,
         }
-    }
-}
-
-struct DebugSelectionSet<'a>(Vec<SelectionField<'a>>);
-
-impl<'a> Debug for DebugSelectionSet<'a> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.0.clone()).finish()
     }
 }
 
 impl<'a> Debug for SelectionField<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        struct DebugSelectionSet<'a>(Vec<SelectionField<'a>>);
+
+        impl<'a> Debug for DebugSelectionSet<'a> {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                f.debug_list().entries(&self.0).finish()
+            }
+        }
+
         f.debug_struct(self.name())
             .field("name", &self.name())
             .field(
@@ -789,6 +740,7 @@ impl<'a> Debug for SelectionField<'a> {
 struct SelectionFieldsIter<'a> {
     fragments: &'a HashMap<Name, Positioned<FragmentDefinition>>,
     iter: Vec<std::slice::Iter<'a, Positioned<Selection>>>,
+    context: &'a Context<'a>,
 }
 
 impl<'a> Iterator for SelectionFieldsIter<'a> {
@@ -803,6 +755,7 @@ impl<'a> Iterator for SelectionFieldsIter<'a> {
                         return Some(SelectionField {
                             fragments: self.fragments,
                             field: &field.node,
+                            context: self.context,
                         });
                     }
                     Selection::FragmentSpread(fragment_spread) => {

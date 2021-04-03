@@ -54,22 +54,15 @@
 //! * Batch Queries
 //! * Apollo Persisted Queries
 //!
-//! # Crate features
+//! ## Crate features
 //!
-//! This crate offers the following features, all of which are activated by default:
-//!
-//! **I recommend that you always turn off all features and turn them on only
-//! when needed, which can significantly increase compilation speed.**
-//!
-//! ```toml
-//! async-graphql = { version = "*", default-features = false }
-//! ```
+//! This crate offers the following features, all of which are not activated by default:
 //!
 //! - `apollo_tracing`: Enable the [Apollo tracing extension](extensions/struct.ApolloTracing.html).
 //! - `apollo_persisted_queries`: Enable the [Apollo persisted queries extension](extensions/apollo_persisted_queries/struct.ApolloPersistedQueries.html).
 //! - `log`: Enable the [logger extension](extensions/struct.Logger.html).
 //! - `tracing`: Enable the [tracing extension](extensions/struct.Tracing.html).
-//! - `multipart`: Support [sending files over HTTP multipart](http/fn.receive_body.html).
+//! - `opentelemetry`: Enable the [OpenTelemetry extension](extensions/struct.OpenTelemetry.html).
 //! - `unblock`: Support [asynchronous reader for Upload](types/struct.Upload.html)
 //! - `bson`: Integrate with the [`bson` crate](https://crates.io/crates/bson).
 //! - `chrono`: Integrate with the [`chrono` crate](https://crates.io/crates/chrono).
@@ -148,7 +141,6 @@
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::unused_self)]
-#![allow(clippy::find_map)]
 #![allow(clippy::cast_lossless)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::implicit_hasher)]
@@ -162,9 +154,10 @@
 #![allow(clippy::useless_let_if_seq)]
 #![warn(missing_docs)]
 #![allow(clippy::trivially_copy_pass_by_ref)]
+#![allow(clippy::upper_case_acronyms)]
 #![recursion_limit = "256"]
 #![forbid(unsafe_code)]
-#![cfg_attr(feature = "nightly", feature(doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod base;
 mod error;
@@ -178,7 +171,7 @@ mod validation;
 
 pub mod context;
 #[cfg(feature = "dataloader")]
-#[cfg_attr(feature = "nightly", doc(cfg(feature = "dataloader")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "dataloader")))]
 pub mod dataloader;
 pub mod extensions;
 pub mod guard;
@@ -208,10 +201,11 @@ pub use subscription::SubscriptionType;
 pub use async_graphql_parser as parser;
 pub use async_graphql_value::{
     from_value, to_value, value, ConstValue as Value, DeserializerError, Name, Number,
-    SerializerError,
+    SerializerError, Variables,
 };
 pub use base::{
-    Description, InputObjectType, InputType, InterfaceType, ObjectType, OutputType, Type, UnionType,
+    ComplexObject, Description, InputObjectType, InputType, InterfaceType, ObjectType, OutputType,
+    Type, UnionType,
 };
 pub use error::{
     Error, ErrorExtensionValues, ErrorExtensions, InputValueError, InputValueResult,
@@ -265,6 +259,7 @@ pub type FieldResult<T> = Result<T>;
 /// | skip          | Skip this field           | bool     | Y        |
 /// | name          | Field name                | string   | Y        |
 /// | desc          | Field description         | string   | Y        |
+/// | deprecation   | Field deprecated          | bool     | Y        |
 /// | deprecation   | Field deprecation reason  | string   | Y        |
 /// | cache_control | Field cache control       | [`CacheControl`](struct.CacheControl.html) | Y        |
 /// | external      | Mark a field as owned by another service. This allows service A to use fields from service B while also knowing at runtime the types of that field. | bool | Y |
@@ -347,7 +342,7 @@ pub type FieldResult<T> = Result<T>;
 ///     }
 /// }
 ///
-/// async_std::task::block_on(async move {
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
 ///     let schema = Schema::new(QueryRoot { value: 10 }, EmptyMutation, EmptySubscription);
 ///     let res = schema.execute(r#"{
 ///         value
@@ -405,7 +400,7 @@ pub type FieldResult<T> = Result<T>;
 ///     }
 /// }
 ///
-/// async_std::task::block_on(async move {
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
 ///     let schema = Schema::new(QueryRoot, EmptyMutation, EmptySubscription);
 ///     let res = schema.execute("{ objs { name } }").await.into_result().unwrap().data;
 ///     assert_eq!(res, value!({
@@ -441,6 +436,7 @@ pub use async_graphql_derive::Object;
 /// |---------------|---------------------------|----------|----------|
 /// | skip          | Skip this field           | bool     | Y        |
 /// | name          | Field name                | string   | Y        |
+/// | deprecation   | Field deprecated          | bool     | Y        |
 /// | deprecation   | Field deprecation reason  | string   | Y        |
 /// | owned         | Field resolver return a ownedship value  | bool   | Y        |
 /// | cache_control | Field cache control       | [`CacheControl`](struct.CacheControl.html) | Y        |
@@ -461,7 +457,7 @@ pub use async_graphql_derive::Object;
 ///     value: i32,
 /// }
 ///
-/// async_std::task::block_on(async move {
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
 ///     let schema = Schema::new(QueryRoot{ value: 10 }, EmptyMutation, EmptySubscription);
 ///     let res = schema.execute("{ value }").await.into_result().unwrap().data;
 ///     assert_eq!(res, value!({
@@ -470,6 +466,82 @@ pub use async_graphql_derive::Object;
 /// });
 /// ```
 pub use async_graphql_derive::SimpleObject;
+
+/// Define a complex GraphQL object for SimpleObject's complex field resolver.
+///
+/// *[See also the Book](https://async-graphql.github.io/async-graphql/en/define_simple_object.html).*
+///
+/// Sometimes most of the fields of a GraphQL object simply return the value of the structure member, but a few
+/// fields are calculated. Usually we use the `Object` macro to define such a GraphQL object.
+///
+/// But this can be done more beautifully with the `ComplexObject` macro. We can use the `SimpleObject` macro to define
+/// some simple fields, and use the `ComplexObject` macro to define some other fields that need to be calculated.
+///
+/// # Macro parameters
+///
+/// | Attribute     | description               | Type     | Optional |
+/// |---------------|---------------------------|----------|----------|
+/// | name          | Object name               | string   | Y        |
+/// | rename_fields | Rename all the fields according to the given case convention. The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE".| string   | Y        |
+/// | rename_args   | Rename all the arguments according to the given case convention. The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE".| string   | Y        |
+///
+/// # Field parameters
+///
+/// | Attribute     | description               | Type     | Optional |
+/// |---------------|---------------------------|----------|----------|
+/// | skip          | Skip this field           | bool     | Y        |
+/// | name          | Field name                | string   | Y        |
+/// | deprecation   | Field deprecated          | bool     | Y        |
+/// | deprecation   | Field deprecation reason  | string   | Y        |
+/// | cache_control | Field cache control       | [`CacheControl`](struct.CacheControl.html) | Y        |
+/// | external      | Mark a field as owned by another service. This allows service A to use fields from service B while also knowing at runtime the types of that field. | bool | Y |
+/// | provides      | Annotate the expected returned fieldset from a field on a base type that is guaranteed to be selectable by the gateway. | string | Y |
+/// | requires      | Annotate the required input fieldset from a base type for a resolver. It is used to develop a query plan where the required fields may not be needed by the client, but the service may need additional information from other services. | string | Y |
+/// | guard         | Field of guard            | [`Guard`](guard/trait.Guard.html) | Y        |
+/// | visible       | If `false`, it will not be displayed in introspection. *[See also the Book](https://async-graphql.github.io/async-graphql/en/visibility.html).* | bool | Y |
+/// | visible       | Call the specified function. If the return value is `false`, it will not be displayed in introspection. | string | Y |
+///
+/// # Examples
+///
+/// ```rust
+/// use async_graphql::*;
+///
+/// #[derive(SimpleObject)]
+/// #[graphql(complex)] // NOTE: If you want the `ComplexObject` macro to take effect, this `complex` attribute is required.
+/// struct MyObj {
+///     a: i32,
+///     b: i32,
+/// }
+///
+/// #[ComplexObject]
+/// impl MyObj {
+///     async fn c(&self) -> i32 {
+///         self.a + self.b     
+///     }
+/// }
+///
+/// struct QueryRoot;
+///
+/// #[Object]
+/// impl QueryRoot {
+///     async fn obj(&self) -> MyObj {
+///         MyObj { a: 10, b: 20 }
+///     }
+/// }
+///
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
+///     let schema = Schema::new(QueryRoot, EmptyMutation, EmptySubscription);
+///     let res = schema.execute("{ obj { a b c } }").await.into_result().unwrap().data;
+///     assert_eq!(res, value!({
+///         "obj": {
+///             "a": 10,
+///             "b": 20,
+///             "c": 30,
+///         },
+///     }));
+/// });
+/// ```
+pub use async_graphql_derive::ComplexObject;
 
 /// Define a GraphQL enum
 ///
@@ -490,6 +562,7 @@ pub use async_graphql_derive::SimpleObject;
 /// | Attribute   | description               | Type     | Optional |
 /// |-------------|---------------------------|----------|----------|
 /// | name        | Item name                 | string   | Y        |
+/// | deprecation | Item deprecated           | bool     | Y        |
 /// | deprecation | Item deprecation reason   | string   | Y        |
 /// | visible       | If `false`, it will not be displayed in introspection. *[See also the Book](https://async-graphql.github.io/async-graphql/en/visibility.html).* | bool | Y |
 /// | visible       | Call the specified function. If the return value is `false`, it will not be displayed in introspection. | string | Y |
@@ -523,7 +596,7 @@ pub use async_graphql_derive::SimpleObject;
 ///     }
 /// }
 ///
-/// async_std::task::block_on(async move {
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
 ///     let schema = Schema::new(QueryRoot{ value1: MyEnum::A, value2: MyEnum::B }, EmptyMutation, EmptySubscription);
 ///     let res = schema.execute("{ value1 value2 }").await.into_result().unwrap().data;
 ///     assert_eq!(res, value!({ "value1": "A", "value2": "b" }));
@@ -580,7 +653,7 @@ pub use async_graphql_derive::Enum;
 ///     }
 /// }
 ///
-/// async_std::task::block_on(async move {
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
 ///     let schema = Schema::new(QueryRoot, EmptyMutation, EmptySubscription);
 ///     let res = schema.execute(r#"
 ///     {
@@ -603,7 +676,7 @@ pub use async_graphql_derive::InputObject;
 /// | name          | Object name               | string   | Y        |
 /// | rename_fields | Rename all the fields according to the given case convention. The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE".| string   | Y        |
 /// | rename_args   | Rename all the arguments according to the given case convention. The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE".| string   | Y        |
-/// | field         | Fields of this Interface  | [InterfaceField] | N |
+/// | field         | Fields of this Interface  | InterfaceField | N |
 /// | extends       | Add fields to an entity that's defined in another service | bool | Y |
 /// | visible       | If `false`, it will not be displayed in introspection. *[See also the Book](https://async-graphql.github.io/async-graphql/en/visibility.html).* | bool | Y |
 /// | visible       | Call the specified function. If the return value is `false`, it will not be displayed in introspection. | string | Y |
@@ -616,8 +689,9 @@ pub use async_graphql_derive::InputObject;
 /// | type        | Field type                | string   | N        |
 /// | method      | Rust resolver method name. If specified, `name` will not be camelCased in schema definition | string | Y |
 /// | desc        | Field description         | string   | Y        |
+/// | deprecation | Field deprecated          | bool     | Y        |
 /// | deprecation | Field deprecation reason  | string   | Y        |
-/// | arg         | Field arguments           | [InterfaceFieldArgument]          | Y        |
+/// | arg         | Field arguments           | InterfaceFieldArgument          | Y        |
 /// | external    | Mark a field as owned by another service. This allows service A to use fields from service B while also knowing at runtime the types of that field. | bool | Y |
 /// | provides    | Annotate the expected returned fieldset from a field on a base type that is guaranteed to be selectable by the gateway. | string | Y |
 /// | requires    | Annotate the required input fieldset from a base type for a resolver. It is used to develop a query plan where the required fields may not be needed by the client, but the service may need additional information from other services. | string | Y |
@@ -709,7 +783,7 @@ pub use async_graphql_derive::InputObject;
 ///     }
 /// }
 ///
-/// async_std::task::block_on(async move {
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
 ///     let schema = Schema::build(QueryRoot, EmptyMutation, EmptySubscription).data("hello".to_string()).finish();
 ///     let res = schema.execute(r#"
 ///     {
@@ -782,7 +856,7 @@ pub use async_graphql_derive::Interface;
 ///     }
 /// }
 ///
-/// async_std::task::block_on(async move {
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
 ///     let schema = Schema::build(QueryRoot, EmptyMutation, EmptySubscription).data("hello".to_string()).finish();
 ///     let res = schema.execute(r#"
 ///     {
@@ -821,6 +895,7 @@ pub use async_graphql_derive::Union;
 /// | name          | Object name               | string   | Y        |
 /// | rename_fields | Rename all the fields according to the given case convention. The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE".| string   | Y        |
 /// | rename_args   | Rename all the arguments according to the given case convention. The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE".| string   | Y        |
+/// | extends       | Add fields to an entity that's defined in another service | bool | Y |
 /// | use_type_description | Specifies that the description of the type is on the type declaration. [`Description`]()(derive.Description.html) | bool | Y |
 ///
 /// # Field parameters
@@ -828,6 +903,7 @@ pub use async_graphql_derive::Union;
 /// | Attribute   | description               | Type     | Optional |
 /// |-------------|---------------------------|----------|----------|
 /// | name        | Field name                | string   | Y        |
+/// | deprecation | Field deprecated          | bool     | Y        |
 /// | deprecation | Field deprecation reason  | string   | Y        |
 /// | guard       | Field of guard            | [`Guard`](guard/trait.Guard.html) | Y        |
 /// | visible       | If `false`, it will not be displayed in introspection. *[See also the Book](https://async-graphql.github.io/async-graphql/en/visibility.html).* | bool | Y |
@@ -876,7 +952,20 @@ pub use async_graphql_derive::Scalar;
 
 /// Define a NewType Scalar
 ///
+/// It also implements `From<InnerType>` and `Into<InnerType>`.
+///
+/// # Macro parameters
+///
+/// | Attribute   | description               | Type     | Optional |
+/// |-------------|---------------------------|----------|----------|
+/// | name        | If this attribute is provided then define a new scalar, otherwise it is just a transparent proxy for the internal scalar. | string   | Y      |
+/// | name        | If this attribute is provided then define a new scalar, otherwise it is just a transparent proxy for the internal scalar. | bool   | Y        |
+/// | visible(Only valid for new scalars.)   | If `false`, it will not be displayed in introspection. *[See also the Book](https://async-graphql.github.io/async-graphql/en/visibility.html).* | bool | Y |
+/// | visible(Only valid for new scalars.)   | Call the specified function. If the return value is `false`, it will not be displayed in introspection. | string | Y |
+///
 /// # Examples
+///
+/// ## Use the original scalar name
 ///
 /// ```rust
 /// use async_graphql::*;
@@ -893,7 +982,11 @@ pub use async_graphql_derive::Scalar;
 ///     }
 /// }
 ///
-/// async_std::task::block_on(async move {
+/// // Test conversion
+/// let weight: Weight = 10f64.into();
+/// let weight_f64: f64 = weight.into();
+///
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
 ///     let schema = Schema::build(QueryRoot, EmptyMutation, EmptySubscription).data("hello".to_string()).finish();
 ///
 ///     let res = schema.execute("{ value }").await.into_result().unwrap().data;
@@ -927,6 +1020,67 @@ pub use async_graphql_derive::Scalar;
 ///     }));
 /// });
 /// ```
+///
+/// ## Define a new scalar
+///
+/// ```rust
+/// use async_graphql::*;
+///
+/// /// Widget NewType
+/// #[derive(NewType)]
+/// #[graphql(name)] // or: #[graphql(name = true)], #[graphql(name = "Weight")]
+/// struct Weight(f64);
+///
+/// struct QueryRoot;
+///
+/// #[Object]
+/// impl QueryRoot {
+///     async fn value(&self) -> Weight {
+///         Weight(1.234)
+///     }
+/// }
+///
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
+///     let schema = Schema::build(QueryRoot, EmptyMutation, EmptySubscription).data("hello".to_string()).finish();
+///
+///     let res = schema.execute("{ value }").await.into_result().unwrap().data;
+///     assert_eq!(res, value!({
+///         "value": 1.234,
+///     }));
+///
+///     let res = schema.execute(r#"
+///     {
+///         __type(name: "QueryRoot") {
+///             fields {
+///                 name type {
+///                     kind
+///                     ofType { name }
+///                 }
+///             }
+///         }
+///     }"#).await.into_result().unwrap().data;
+///     assert_eq!(res, value!({
+///         "__type": {
+///             "fields": [{
+///                 "name": "value",
+///                 "type": {
+///                     "kind": "NON_NULL",
+///                     "ofType": {
+///                         "name": "Weight"
+///                     }
+///                 }
+///             }]
+///         }
+///     }));
+///
+///     assert_eq!(schema.execute(r#"{ __type(name: "Weight") { name description } }"#).
+///         await.into_result().unwrap().data, value!({
+///             "__type": {
+///                 "name": "Weight", "description": "Widget NewType"
+///             }
+///         }));
+/// });
+/// ```
 pub use async_graphql_derive::NewType;
 
 /// Define a merged object with multiple object types.
@@ -940,7 +1094,6 @@ pub use async_graphql_derive::NewType;
 /// | name          | Object name               | string   | Y        |
 /// | cache_control | Object cache control      | [`CacheControl`](struct.CacheControl.html) | Y        |
 /// | extends       | Add fields to an entity that's defined in another service | bool | Y |
-/// | use_type_description | Specifies that the description of the type is on the type declaration. [`Description`]()(derive.Description.html) | bool | Y |
 /// | visible       | If `false`, it will not be displayed in introspection. *[See also the Book](https://async-graphql.github.io/async-graphql/en/visibility.html).* | bool | Y |
 /// | visible       | Call the specified function. If the return value is `false`, it will not be displayed in introspection. | string | Y |
 ///
@@ -980,6 +1133,9 @@ pub use async_graphql_derive::MergedObject;
 /// | Attribute     | description               | Type     | Optional |
 /// |---------------|---------------------------|----------|----------|
 /// | name          | Object name               | string   | Y        |
+/// | extends       | Add fields to an entity that's defined in another service | bool | Y |
+/// | visible       | If `false`, it will not be displayed in introspection. *[See also the Book](https://async-graphql.github.io/async-graphql/en/visibility.html).* | bool | Y |
+/// | visible       | Call the specified function. If the return value is `false`, it will not be displayed in introspection. | string | Y |
 ///
 /// # Examples
 ///
@@ -1039,7 +1195,7 @@ pub use async_graphql_derive::MergedSubscription;
 ///     obj: MyObj,
 /// }
 ///
-/// async_std::task::block_on(async move {
+/// tokio::runtime::Runtime::new().unwrap().block_on(async move {
 ///     let schema = Schema::new(Query::default(), EmptyMutation, EmptySubscription);
 ///     assert_eq!(
 ///         schema

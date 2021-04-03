@@ -2,7 +2,8 @@ use async_graphql::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashSet, LinkedList, VecDeque};
 
-#[async_std::test]
+//noinspection ALL
+#[tokio::test]
 pub async fn test_list_type() {
     #[derive(InputObject)]
     struct MyInput {
@@ -87,17 +88,15 @@ pub async fn test_list_type() {
     let mut res = schema.execute(&query).await.data;
 
     if let Value::Object(obj) = &mut res {
-        if let Some(value_hash_set) = obj.get_mut("valueHashSet") {
-            if let Value::List(array) = value_hash_set {
-                array.sort_by(|a, b| {
-                    if let (Value::Number(a), Value::Number(b)) = (a, b) {
-                        if let (Some(a), Some(b)) = (a.as_i64(), b.as_i64()) {
-                            return a.cmp(&b);
-                        }
+        if let Some(Value::List(array)) = obj.get_mut("valueHashSet") {
+            array.sort_by(|a, b| {
+                if let (Value::Number(a), Value::Number(b)) = (a, b) {
+                    if let (Some(a), Some(b)) = (a.as_i64(), b.as_i64()) {
+                        return a.cmp(&b);
                     }
-                    Ordering::Less
-                });
-            }
+                }
+                Ordering::Less
+            });
         }
     }
 
